@@ -210,8 +210,7 @@ fn call(ctx: &mut VarTable, ns: &str, name: &str, args: &[Expr]) -> RawValue {
     } else {
         let args = args.iter().map(|e| e.call(ctx)).collect::<Vec<_>>();
         ctx.runtime
-            .modules
-            .get(ns)
+            .module(ns)
             .map(|runtime| {
                 runtime
                     .dispatch_method(name, &args)
@@ -268,9 +267,9 @@ impl Callable for Text {
 #[cfg(test)]
 mod test {
     use crate::{plugin::Runtime, script::*};
-    use tokio::sync::OnceCell;
+    use tokio::sync::{Mutex, OnceCell};
 
-    static RUNTIME: OnceCell<Runtime> = OnceCell::const_new();
+    static RUNTIME: OnceCell<Mutex<Runtime>> = OnceCell::const_new();
 
     async fn with_ctx(f: impl FnOnce(&mut VarTable)) {
         let runtime = RUNTIME
@@ -280,11 +279,12 @@ mod test {
                     env!("CARGO_MANIFEST_DIR"),
                     &["random"],
                 );
-                runtime.await.unwrap()
+                Mutex::new(runtime.await.unwrap())
             })
             .await;
+        let mut runtime = runtime.lock().await;
         let mut locals = VarMap::default();
-        let mut ctx = VarTable::new(runtime, &mut locals);
+        let mut ctx = VarTable::new(&mut runtime, &mut locals);
         f(&mut ctx);
     }
 
