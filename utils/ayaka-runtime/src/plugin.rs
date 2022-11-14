@@ -8,7 +8,7 @@ use ayaka_bindings_types::*;
 use log::warn;
 use scopeguard::defer;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{cell::RefCell, collections::HashMap, ops::Deref, path::Path, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, marker::Tuple, ops::Deref, path::Path, sync::Arc};
 use stream_future::stream;
 use tryiterator::TryIteratorExt;
 use wasmi::{core::Trap, *};
@@ -216,7 +216,7 @@ pub enum LoadStatus {
     LoadPlugin(String, usize, usize),
 }
 
-unsafe fn import<T, Params: DeserializeOwned, Res: Serialize>(
+unsafe fn import<T, Params: DeserializeOwned + Tuple, Res: Serialize>(
     mut store: Caller<T>,
     len: i32,
     data: i32,
