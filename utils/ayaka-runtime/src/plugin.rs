@@ -6,31 +6,33 @@ use crate::*;
 use anyhow::Result;
 use ayaka_bindings_types::*;
 use log::warn;
-use scopeguard::defer;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{cell::RefCell, collections::HashMap, marker::Tuple, ops::Deref, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    marker::Tuple,
+    ops::Deref,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use stream_future::stream;
 use tryiterator::TryIteratorExt;
-use wasmi::{core::Trap, *};
-use wasmi_wasi::*;
+use wasmtime::*;
+use wasmtime_wasi::*;
 
 #[derive(Clone)]
-struct HostStore(Arc<RefCell<Store<WasiCtx>>>);
-
-// TODO: Make sure it is safe
-unsafe impl Send for HostStore {}
-unsafe impl Sync for HostStore {}
+struct HostStore(Arc<Mutex<Store<WasiCtx>>>);
 
 impl Deref for HostStore {
-    type Target = RefCell<Store<WasiCtx>>;
+    type Target = Arc<Mutex<Store<WasiCtx>>>;
 
     fn deref(&self) -> &Self::Target {
-        self.0.deref()
+        &self.0
     }
 }
 
 /// An instance of a WASM plugin module.
 pub struct Host {
+    store: HostStore,
     instance: Instance,
     memory: Memory,
     abi_free: TypedFunc<(i32, i32), ()>,
@@ -38,7 +40,7 @@ pub struct Host {
 }
 
 unsafe fn mem_slice<'a, T: 'a>(
-    store: impl Into<StoreContext<'a, T>> + 'a,
+    store: impl Into<StoreContext<'a, T>>,
     memory: &Memory,
     start: i32,
     len: i32,
@@ -50,7 +52,7 @@ unsafe fn mem_slice<'a, T: 'a>(
 }
 
 unsafe fn mem_slice_mut<'a, T: 'a>(
-    store: impl Into<StoreContextMut<'a, T>> + 'a,
+    store: impl Into<StoreContextMut<'a, T>>,
     memory: &Memory,
     start: i32,
     len: i32,
@@ -63,32 +65,29 @@ unsafe fn mem_slice_mut<'a, T: 'a>(
 
 impl Host {
     /// Loads the WASM [`Module`], with some imports.
-    pub fn new<T>(
-        mut store: StoreContextMut<T>,
-        module: &Module,
-        linker: &Linker<WasiCtx>,
-    ) -> Result<Self> {
-        let instance = linker
-            .instantiate(store.as_context_mut(), module)?
-            .start(store.as_context_mut())?;
+    fn new(store: HostStore, module: &Module, linker: &Linker<WasiCtx>) -> Result<Self> {
+        let mut store_inner = store.lock().unwrap();
+        let instance = linker.instantiate(store_inner.as_context_mut(), module)?;
         let memory = instance
-            .get_export(store.as_context(), "memory")
+            .get_export(store_inner.as_context_mut(), "memory")
             .unwrap()
             .into_memory()
             .unwrap();
         let abi_free = instance
-            .get_export(store.as_context(), "__abi_free")
+            .get_export(store_inner.as_context_mut(), "__abi_free")
             .unwrap()
             .into_func()
             .unwrap()
-            .typed(store.as_context())?;
+            .typed(store_inner.as_context())?;
         let abi_alloc = instance
-            .get_export(store.as_context(), "__abi_alloc")
+            .get_export(store_inner.as_context_mut(), "__abi_alloc")
             .unwrap()
             .into_func()
             .unwrap()
-            .typed(store.as_context())?;
+            .typed(store_inner.as_context())?;
+        drop(store_inner);
         Ok(Self {
+            store,
             instance,
             memory,
             abi_free,
@@ -99,57 +98,39 @@ impl Host {
     /// Calls a method by name.
     ///
     /// The args and returns are passed by MessagePack with [`rmp_serde`].
-    pub fn call<T, Params: Serialize, Res: DeserializeOwned>(
+    pub fn call<Params: Serialize, Res: DeserializeOwned>(
         &self,
-        mut store: StoreContextMut<T>,
         name: &str,
         args: Params,
     ) -> Result<Res> {
+        let mut store_inner = self.store.lock().unwrap();
         let memory = &self.memory;
         let func = self
             .instance
-            .get_export(store.as_context(), name)
+            .get_export(store_inner.as_context_mut(), name)
             .unwrap()
             .into_func()
             .unwrap()
-            .typed::<(i32, i32), i64>(store.as_context())?;
+            .typed::<(i32, i32), i64, _>(store_inner.as_context())?;
 
         let data = rmp_serde::to_vec(&args)?;
 
         let ptr = self
             .abi_alloc
-            .call(store.as_context_mut(), data.len() as i32)?;
-        //defer! { self.abi_free.call(store, (ptr, data.len() as i32)).unwrap(); }
-        unsafe { mem_slice_mut(store.as_context_mut(), memory, ptr, data.len() as i32) }
+            .call(store_inner.as_context_mut(), data.len() as i32)?;
+        unsafe { mem_slice_mut(store_inner.as_context_mut(), memory, ptr, data.len() as i32) }
             .copy_from_slice(&data);
 
-        let res = func.call(store.as_context_mut(), (data.len() as i32, ptr))?;
+        let res = func.call(store_inner.as_context_mut(), (data.len() as i32, ptr))?;
+        self.abi_free
+            .call(store_inner.as_context_mut(), (ptr, data.len() as i32))?;
         let (len, res) = ((res >> 32) as i32, (res & 0xFFFFFFFF) as i32);
-        //defer! { self.abi_free.call(store, (res, len)).unwrap(); }
 
-        let res_data = unsafe { mem_slice(store.as_context(), memory, res, len) };
+        let res_data = unsafe { mem_slice(store_inner.as_context(), memory, res, len) };
         let res_data = rmp_serde::from_slice(res_data)?;
+        self.abi_free
+            .call(store_inner.as_context_mut(), (res, len))?;
         Ok(res_data)
-    }
-}
-
-pub struct HostRef<'a> {
-    store: HostStore,
-    host: &'a Host,
-}
-
-impl<'a> HostRef<'a> {
-    fn new(store: HostStore, host: &'a Host) -> Self {
-        Self { store, host }
-    }
-
-    fn call<Params: Serialize, Res: DeserializeOwned>(
-        &self,
-        name: &str,
-        args: Params,
-    ) -> Result<Res> {
-        self.host
-            .call(self.store.borrow_mut().as_context_mut(), name, args)
     }
 
     /// Calls a script plugin method by name.
@@ -194,7 +175,6 @@ impl<'a> HostRef<'a> {
 
 /// The plugin runtime.
 pub struct Runtime {
-    store: HostStore,
     /// The plugins map by name.
     modules: HashMap<String, Host>,
     /// The action plugins.
@@ -232,7 +212,7 @@ unsafe fn import<T, Params: DeserializeOwned + Tuple, Res: Serialize>(
         .unwrap()
         .into_func()
         .unwrap()
-        .typed::<i32, i32>(&store)
+        .typed::<i32, i32, _>(&store)
         .map_err(|e| Trap::new(e.to_string()))?;
     let ptr = alloc.call(&mut store, data.len() as _)?;
     mem_slice_mut(&mut store, &memory, ptr, data.len() as _).copy_from_slice(&data);
@@ -244,8 +224,8 @@ impl Runtime {
         let engine = Engine::default();
         let wasi = WasiCtxBuilder::new().inherit_stdio().build();
         let mut store = Store::new(&engine, wasi);
-        let mut linker = Linker::new();
-        define_wasi(&mut linker, &mut store, |ctx| ctx)?;
+        let mut linker = Linker::new(&engine);
+        add_to_linker(&mut linker, |ctx| ctx)?;
 
         let log_func = Func::wrap(
             &mut store,
@@ -269,7 +249,7 @@ impl Runtime {
         linker.define("log", "__log", log_func)?;
         linker.define("log", "__log_flush", log_flush_func)?;
 
-        Ok((linker, HostStore(Arc::new(RefCell::new(store)))))
+        Ok((linker, HostStore(Arc::new(Mutex::new(store)))))
     }
 
     /// Load plugins from specific directory and plugin names.
@@ -325,10 +305,9 @@ impl Runtime {
         for (i, (name, p)) in paths.into_iter().enumerate() {
             yield LoadStatus::LoadPlugin(name.clone(), i, total_len);
             let buf = std::fs::read(p)?;
-            let module = Module::new(store.borrow().engine(), buf.as_slice())?;
-            let runtime = Host::new(store.borrow_mut().as_context_mut(), &module, &linker)?;
-            let runtime_ref = HostRef::new(store.clone(), &runtime);
-            let plugin_type = runtime_ref.plugin_type()?;
+            let module = Module::new(store.lock().unwrap().engine(), buf.as_slice())?;
+            let runtime = Host::new(store.clone(), &module, &linker)?;
+            let plugin_type = runtime.plugin_type()?;
             if plugin_type.action {
                 action_modules.push(name.clone());
             }
@@ -356,7 +335,6 @@ impl Runtime {
             modules.insert(name, runtime);
         }
         Ok(Self {
-            store,
             modules,
             action_modules,
             text_modules,
@@ -365,60 +343,27 @@ impl Runtime {
         })
     }
 
-    pub fn module(&self, key: &str) -> Option<HostRef> {
-        self.modules
-            .get(key)
-            .map(|host| HostRef::new(self.store.clone(), host))
+    pub fn module(&self, key: &str) -> Option<&Host> {
+        self.modules.get(key)
     }
 
-    pub fn action_modules(&self) -> impl Iterator<Item = HostRef> {
-        ModuleIter::new(self.store.clone(), &self.modules, &self.action_modules)
+    pub fn action_modules(&self) -> impl Iterator<Item = &Host> {
+        self.action_modules
+            .iter()
+            .map(|key| self.module(key).unwrap())
     }
 
-    pub fn text_module(&self, cmd: &str) -> Option<HostRef> {
+    pub fn text_module(&self, cmd: &str) -> Option<&Host> {
         self.text_modules.get(cmd).and_then(|key| self.module(key))
     }
 
-    pub fn line_module(&self, cmd: &str) -> Option<HostRef> {
+    pub fn line_module(&self, cmd: &str) -> Option<&Host> {
         self.line_modules.get(cmd).and_then(|key| self.module(key))
     }
 
-    pub fn game_modules(&self) -> impl Iterator<Item = HostRef> {
-        ModuleIter::new(self.store.clone(), &self.modules, &self.game_modules)
-    }
-}
-
-struct ModuleIter<'a> {
-    store: HostStore,
-    modules: &'a HashMap<String, Host>,
-    keys: &'a [String],
-    index: usize,
-}
-
-impl<'a> ModuleIter<'a> {
-    pub fn new(store: HostStore, modules: &'a HashMap<String, Host>, keys: &'a [String]) -> Self {
-        Self {
-            store,
-            modules,
-            keys,
-            index: 0,
-        }
-    }
-}
-
-impl<'a> Iterator for ModuleIter<'a> {
-    type Item = HostRef<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let i = self.index;
-        if i < self.keys.len() {
-            self.index += 1;
-            Some(HostRef::new(
-                self.store.clone(),
-                &self.modules[&self.keys[i]],
-            ))
-        } else {
-            None
-        }
+    pub fn game_modules(&self) -> impl Iterator<Item = &Host> {
+        self.game_modules
+            .iter()
+            .map(|key| self.module(key).unwrap())
     }
 }

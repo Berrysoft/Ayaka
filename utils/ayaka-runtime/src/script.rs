@@ -282,9 +282,9 @@ mod test {
                 Mutex::new(runtime.await.unwrap())
             })
             .await;
-        let mut runtime = runtime.lock().await;
+        let runtime = runtime.lock().await;
         let mut locals = VarMap::default();
-        let mut ctx = VarTable::new(&mut runtime, &mut locals);
+        let mut ctx = VarTable::new(&runtime, &mut locals);
         f(&mut ctx);
     }
 
