@@ -15,6 +15,7 @@ serde_yaml = "0.9"
 serde_json = "1.0"
 rmp-serde = "1.1"
 anyhow = "1.0"
+scopeguard = "1.1"
 wasmtime = "2.0"
 wasmtime-wasi = "2.0"
 tokio = { version = "1", features = ["macros", "sync"] }

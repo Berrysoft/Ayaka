@@ -6,11 +6,11 @@ use crate::*;
 use anyhow::Result;
 use ayaka_bindings_types::*;
 use log::warn;
+use scopeguard::defer;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::HashMap,
     marker::Tuple,
-    ops::Deref,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -18,26 +18,6 @@ use stream_future::stream;
 use tryiterator::TryIteratorExt;
 use wasmtime::*;
 use wasmtime_wasi::*;
-
-#[derive(Clone)]
-struct HostStore(Arc<Mutex<Store<WasiCtx>>>);
-
-impl Deref for HostStore {
-    type Target = Arc<Mutex<Store<WasiCtx>>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// An instance of a WASM plugin module.
-pub struct Host {
-    store: HostStore,
-    instance: Instance,
-    memory: Memory,
-    abi_free: TypedFunc<(i32, i32), ()>,
-    abi_alloc: TypedFunc<i32, i32>,
-}
 
 unsafe fn mem_slice<'a, T: 'a>(
     store: impl Into<StoreContext<'a, T>>,
@@ -63,31 +43,92 @@ unsafe fn mem_slice_mut<'a, T: 'a>(
         .get_unchecked_mut(..len as usize)
 }
 
+type HostStore = Arc<Mutex<Store<WasiCtx>>>;
+
+struct HostInstance {
+    store: HostStore,
+    instance: Instance,
+}
+
+impl HostInstance {
+    pub fn new(store: HostStore, instance: Instance) -> Self {
+        Self { store, instance }
+    }
+
+    pub fn get_memory(&self) -> Option<HostMemory> {
+        self.instance
+            .get_memory(self.store.lock().unwrap().as_context_mut(), "memory")
+            .map(|mem| HostMemory::new(self.store.clone(), mem))
+    }
+
+    pub fn get_typed_func<Params: WasmParams, Results: WasmResults>(
+        &self,
+        name: &str,
+    ) -> Result<HostTypedFunc<Params, Results>> {
+        self.instance
+            .get_typed_func(self.store.lock().unwrap().as_context_mut(), name)
+            .map(|func| HostTypedFunc::new(self.store.clone(), func))
+    }
+}
+
+struct HostMemory {
+    store: HostStore,
+    memory: Memory,
+}
+
+impl HostMemory {
+    pub fn new(store: HostStore, memory: Memory) -> Self {
+        Self { store, memory }
+    }
+
+    pub unsafe fn slice<R>(&self, start: i32, len: i32, f: impl FnOnce(&[u8]) -> R) -> R {
+        let store = self.store.lock().unwrap();
+        let data = mem_slice(store.as_context(), &self.memory, start, len);
+        f(data)
+    }
+
+    pub unsafe fn slice_mut<R>(&self, start: i32, len: i32, f: impl FnOnce(&mut [u8]) -> R) -> R {
+        let mut store = self.store.lock().unwrap();
+        let data = mem_slice_mut(store.as_context_mut(), &self.memory, start, len);
+        f(data)
+    }
+}
+
+struct HostTypedFunc<Params, Results> {
+    store: HostStore,
+    func: TypedFunc<Params, Results>,
+}
+
+impl<Params: WasmParams, Results: WasmResults> HostTypedFunc<Params, Results> {
+    pub fn new(store: HostStore, func: TypedFunc<Params, Results>) -> Self {
+        Self { store, func }
+    }
+
+    pub fn call(&self, params: Params) -> Result<Results, Trap> {
+        self.func
+            .call(self.store.lock().unwrap().as_context_mut(), params)
+    }
+}
+
+/// An instance of a WASM plugin module.
+pub struct Host {
+    instance: HostInstance,
+    memory: HostMemory,
+    abi_free: HostTypedFunc<(i32, i32), ()>,
+    abi_alloc: HostTypedFunc<i32, i32>,
+}
+
 impl Host {
     /// Loads the WASM [`Module`], with some imports.
     fn new(store: HostStore, module: &Module, linker: &Linker<WasiCtx>) -> Result<Self> {
-        let mut store_inner = store.lock().unwrap();
-        let instance = linker.instantiate(store_inner.as_context_mut(), module)?;
-        let memory = instance
-            .get_export(store_inner.as_context_mut(), "memory")
-            .unwrap()
-            .into_memory()
-            .unwrap();
-        let abi_free = instance
-            .get_export(store_inner.as_context_mut(), "__abi_free")
-            .unwrap()
-            .into_func()
-            .unwrap()
-            .typed(store_inner.as_context())?;
-        let abi_alloc = instance
-            .get_export(store_inner.as_context_mut(), "__abi_alloc")
-            .unwrap()
-            .into_func()
-            .unwrap()
-            .typed(store_inner.as_context())?;
-        drop(store_inner);
+        let instance = HostInstance::new(
+            store.clone(),
+            linker.instantiate(store.lock().unwrap().as_context_mut(), module)?,
+        );
+        let memory = instance.get_memory().unwrap();
+        let abi_free = instance.get_typed_func("__abi_free")?;
+        let abi_alloc = instance.get_typed_func("__abi_alloc")?;
         Ok(Self {
-            store,
             instance,
             memory,
             abi_free,
@@ -103,33 +144,20 @@ impl Host {
         name: &str,
         args: Params,
     ) -> Result<Res> {
-        let mut store_inner = self.store.lock().unwrap();
         let memory = &self.memory;
-        let func = self
-            .instance
-            .get_export(store_inner.as_context_mut(), name)
-            .unwrap()
-            .into_func()
-            .unwrap()
-            .typed::<(i32, i32), i64, _>(store_inner.as_context())?;
+        let func = self.instance.get_typed_func::<(i32, i32), i64>(name)?;
 
         let data = rmp_serde::to_vec(&args)?;
 
-        let ptr = self
-            .abi_alloc
-            .call(store_inner.as_context_mut(), data.len() as i32)?;
-        unsafe { mem_slice_mut(store_inner.as_context_mut(), memory, ptr, data.len() as i32) }
-            .copy_from_slice(&data);
+        let ptr = self.abi_alloc.call(data.len() as i32)?;
+        defer!(self.abi_free.call((ptr, data.len() as i32)).unwrap());
+        unsafe { memory.slice_mut(ptr, data.len() as i32, |s| s.copy_from_slice(&data)) };
 
-        let res = func.call(store_inner.as_context_mut(), (data.len() as i32, ptr))?;
-        self.abi_free
-            .call(store_inner.as_context_mut(), (ptr, data.len() as i32))?;
+        let res = func.call((data.len() as i32, ptr))?;
         let (len, res) = ((res >> 32) as i32, (res & 0xFFFFFFFF) as i32);
+        defer!(self.abi_free.call((res, len)).unwrap());
 
-        let res_data = unsafe { mem_slice(store_inner.as_context(), memory, res, len) };
-        let res_data = rmp_serde::from_slice(res_data)?;
-        self.abi_free
-            .call(store_inner.as_context_mut(), (res, len))?;
+        let res_data = unsafe { memory.slice(res, len, |s| rmp_serde::from_slice(s)) }?;
         Ok(res_data)
     }
 
@@ -249,7 +277,7 @@ impl Runtime {
         linker.define("log", "__log", log_func)?;
         linker.define("log", "__log_flush", log_flush_func)?;
 
-        Ok((linker, HostStore(Arc::new(Mutex::new(store)))))
+        Ok((linker, Arc::new(Mutex::new(store))))
     }
 
     /// Load plugins from specific directory and plugin names.
@@ -343,24 +371,29 @@ impl Runtime {
         })
     }
 
+    /// Gets module from name.
     pub fn module(&self, key: &str) -> Option<&Host> {
         self.modules.get(key)
     }
 
+    /// Iterates action modules.
     pub fn action_modules(&self) -> impl Iterator<Item = &Host> {
         self.action_modules
             .iter()
             .map(|key| self.module(key).unwrap())
     }
 
+    /// Gets text module from command.
     pub fn text_module(&self, cmd: &str) -> Option<&Host> {
         self.text_modules.get(cmd).and_then(|key| self.module(key))
     }
 
+    /// Gets line module from command.
     pub fn line_module(&self, cmd: &str) -> Option<&Host> {
         self.line_modules.get(cmd).and_then(|key| self.module(key))
     }
 
+    /// Iterates game modules.
     pub fn game_modules(&self) -> impl Iterator<Item = &Host> {
         self.game_modules
             .iter()
