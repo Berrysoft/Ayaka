@@ -11,6 +11,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::HashMap,
     marker::Tuple,
+    os::windows::prelude::OpenOptionsExt,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -248,9 +249,17 @@ unsafe fn import<T, Params: DeserializeOwned + Tuple, Res: Serialize>(
 }
 
 impl Runtime {
-    fn new_linker() -> Result<(Linker<WasiCtx>, HostStore)> {
+    fn new_linker(root_path: &Path) -> Result<(Linker<WasiCtx>, HostStore)> {
         let engine = Engine::default();
-        let wasi = WasiCtxBuilder::new().inherit_stdio().build();
+        let root = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .custom_flags(0x02000000)
+            .open(root_path)?;
+        let wasi = WasiCtxBuilder::new()
+            .inherit_stdio()
+            .preopened_dir(Dir::from_std_file(root), "/")?
+            .build();
         let mut store = Store::new(&engine, wasi);
         let mut linker = Linker::new(&engine);
         add_to_linker(&mut linker, |ctx| ctx)?;
@@ -291,9 +300,10 @@ impl Runtime {
         rel_to: impl AsRef<Path> + 'a,
         names: &'a [impl AsRef<str>],
     ) -> Result<Self> {
-        let path = rel_to.as_ref().join(dir);
+        let root_path = rel_to.as_ref();
+        let path = root_path.join(dir);
         yield LoadStatus::CreateEngine;
-        let (linker, store) = Self::new_linker()?;
+        let (linker, store) = Self::new_linker(root_path)?;
         let mut modules = HashMap::new();
         let mut action_modules = vec![];
         let mut text_modules = HashMap::new();
