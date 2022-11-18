@@ -417,14 +417,14 @@ fn main() -> Result<()> {
             let ident = app.config().tauri.bundle.identifier.clone();
             let log_handle = if cfg!(debug_assertions) {
                 Logger::with(LogSpecification::parse(
-                    "debug,wasmer=warn,regalloc=info,cranelift=info",
+                    "debug,wasmtime=warn,regalloc=info,cranelift=info",
                 )?)
                 .log_to_stdout()
                 .set_palette("b1;3;2;4;6".to_string())
                 .use_utc()
                 .start()?
             } else {
-                Logger::with(LogSpecification::parse("info,wasmer=warn")?)
+                Logger::with(LogSpecification::parse("info,wasmtime=warn")?)
                     .log_to_file(
                         FileSpec::default()
                             .directory(app.path_resolver().app_log_dir().unwrap())

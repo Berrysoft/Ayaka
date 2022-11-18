@@ -35,7 +35,7 @@ fn pause(auto: bool) -> Result<()> {
 async fn main() -> Result<()> {
     let opts = Options::parse();
     env_logger::Builder::from_default_env()
-        .filter_module("wasmer", LevelFilter::Warn)
+        .filter_module("wasmtime", LevelFilter::Warn)
         .try_init()?;
     let context = Context::open(&opts.input, FrontendType::Text);
     pin_mut!(context);
