@@ -11,7 +11,6 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::HashMap,
     marker::Tuple,
-    os::windows::prelude::OpenOptionsExt,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -225,40 +224,48 @@ pub enum LoadStatus {
     LoadPlugin(String, usize, usize),
 }
 
-unsafe fn import<T, Params: DeserializeOwned + Tuple, Res: Serialize>(
-    mut store: Caller<T>,
-    len: i32,
-    data: i32,
-    f: impl FnOnce<Params, Output = Res>,
-) -> std::result::Result<u64, Trap> {
-    let memory = store.get_export("memory").unwrap().into_memory().unwrap();
-    let data = mem_slice(&store, &memory, data, len);
-    let data = rmp_serde::from_slice(data).map_err(|e| Trap::new(e.to_string()))?;
-    let res = f.call_once(data);
-    let data = rmp_serde::to_vec(&res).map_err(|e| Trap::new(e.to_string()))?;
-    let alloc = store
-        .get_export("__abi_alloc")
-        .unwrap()
-        .into_func()
-        .unwrap()
-        .typed::<i32, i32, _>(&store)
-        .map_err(|e| Trap::new(e.to_string()))?;
-    let ptr = alloc.call(&mut store, data.len() as _)?;
-    mem_slice_mut(&mut store, &memory, ptr, data.len() as _).copy_from_slice(&data);
-    Ok(((data.len() as u64) << 32) | (ptr as u64))
-}
-
 impl Runtime {
+    unsafe fn import<T, Params: DeserializeOwned + Tuple, Res: Serialize>(
+        mut store: Caller<T>,
+        len: i32,
+        data: i32,
+        f: impl FnOnce<Params, Output = Res>,
+    ) -> std::result::Result<u64, Trap> {
+        let memory = store.get_export("memory").unwrap().into_memory().unwrap();
+        let data = mem_slice(&store, &memory, data, len);
+        let data = rmp_serde::from_slice(data).map_err(|e| Trap::new(e.to_string()))?;
+        let res = f.call_once(data);
+        let data = rmp_serde::to_vec(&res).map_err(|e| Trap::new(e.to_string()))?;
+        let alloc = store
+            .get_export("__abi_alloc")
+            .unwrap()
+            .into_func()
+            .unwrap()
+            .typed::<i32, i32, _>(&store)
+            .map_err(|e| Trap::new(e.to_string()))?;
+        let ptr = alloc.call(&mut store, data.len() as _)?;
+        mem_slice_mut(&mut store, &memory, ptr, data.len() as _).copy_from_slice(&data);
+        Ok(((data.len() as u64) << 32) | (ptr as u64))
+    }
+
+    fn preopen_root(root_path: &Path) -> Result<Dir> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(3); // remove FILE_SHARE_DELETE
+            options.custom_flags(0x02000000); // open dir with FILE_FLAG_BACKUP_SEMANTICS
+        }
+        let root = options.open(root_path)?;
+        Ok(Dir::from_std_file(root))
+    }
+
     fn new_linker(root_path: &Path) -> Result<(Linker<WasiCtx>, HostStore)> {
         let engine = Engine::default();
-        let root = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(3)
-            .custom_flags(0x02000000)
-            .open(root_path)?;
         let wasi = WasiCtxBuilder::new()
             .inherit_stdio()
-            .preopened_dir(Dir::from_std_file(root), "/")?
+            .preopened_dir(Self::preopen_root(root_path)?, "/")?
             .build();
         let mut store = Store::new(&engine, wasi);
         let mut linker = Linker::new(&engine);
@@ -267,7 +274,7 @@ impl Runtime {
         let log_func = Func::wrap(
             &mut store,
             |store: Caller<WasiCtx>, len: i32, data: i32| unsafe {
-                import(store, len, data, |data: Record| {
+                Self::import(store, len, data, |data: Record| {
                     log::logger().log(
                         &log::Record::builder()
                             .level(data.level)
