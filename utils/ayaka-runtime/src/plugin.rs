@@ -16,8 +16,8 @@ use std::{
 };
 use stream_future::stream;
 use tryiterator::TryIteratorExt;
-use wasmtime::*;
-use wasmtime_wasi::*;
+use wasmi::{core::Trap, *};
+use wasmi_wasi::*;
 
 unsafe fn mem_slice<'a, T: 'a>(
     store: impl Into<StoreContext<'a, T>>,
@@ -57,17 +57,24 @@ impl HostInstance {
 
     pub fn get_memory(&self) -> Option<HostMemory> {
         self.instance
-            .get_memory(self.store.lock().unwrap().as_context_mut(), "memory")
-            .map(|mem| HostMemory::new(self.store.clone(), mem))
+            .get_export(self.store.lock().unwrap().as_context_mut(), "memory")
+            .map(|mem| HostMemory::new(self.store.clone(), mem.into_memory().unwrap()))
     }
 
     pub fn get_typed_func<Params: WasmParams, Results: WasmResults>(
         &self,
         name: &str,
-    ) -> Result<HostTypedFunc<Params, Results>> {
-        self.instance
-            .get_typed_func(self.store.lock().unwrap().as_context_mut(), name)
-            .map(|func| HostTypedFunc::new(self.store.clone(), func))
+    ) -> Result<HostTypedFunc<Params, Results>, wasmi::Error> {
+        let func = {
+            let mut store = self.store.lock().unwrap();
+            self.instance
+                .get_export(store.as_context_mut(), name)
+                .unwrap()
+                .into_func()
+                .unwrap()
+                .typed(store.as_context())?
+        };
+        Ok(HostTypedFunc::new(self.store.clone(), func))
     }
 }
 
@@ -121,10 +128,13 @@ pub struct Host {
 impl Host {
     /// Loads the WASM [`Module`], with some imports.
     fn new(store: HostStore, module: &Module, linker: &Linker<WasiCtx>) -> Result<Self> {
-        let instance = HostInstance::new(
-            store.clone(),
-            linker.instantiate(store.lock().unwrap().as_context_mut(), module)?,
-        );
+        let instance = {
+            let mut store = store.lock().unwrap();
+            linker
+                .instantiate(store.as_context_mut(), module)?
+                .start(store.as_context_mut())?
+        };
+        let instance = HostInstance::new(store, instance);
         let memory = instance.get_memory().unwrap();
         let abi_free = instance.get_typed_func("__abi_free")?;
         let abi_alloc = instance.get_typed_func("__abi_alloc")?;
@@ -241,14 +251,14 @@ impl Runtime {
             .unwrap()
             .into_func()
             .unwrap()
-            .typed::<i32, i32, _>(&store)
+            .typed::<i32, i32>(&store)
             .map_err(|e| Trap::new(e.to_string()))?;
         let ptr = alloc.call(&mut store, data.len() as _)?;
         mem_slice_mut(&mut store, &memory, ptr, data.len() as _).copy_from_slice(&data);
         Ok(((data.len() as u64) << 32) | (ptr as u64))
     }
 
-    fn preopen_root(root_path: &Path) -> Result<Dir> {
+    fn preopen_root(root_path: &Path) -> Result<cap_std::fs::Dir> {
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         #[cfg(windows)]
@@ -258,7 +268,7 @@ impl Runtime {
             options.custom_flags(0x02000000); // open dir with FILE_FLAG_BACKUP_SEMANTICS
         }
         let root = options.open(root_path)?;
-        Ok(Dir::from_std_file(root))
+        Ok(cap_std::fs::Dir::from_std_file(root))
     }
 
     fn new_linker(root_path: &Path) -> Result<(Linker<WasiCtx>, HostStore)> {
@@ -268,8 +278,8 @@ impl Runtime {
             .preopened_dir(Self::preopen_root(root_path)?, "/")?
             .build();
         let mut store = Store::new(&engine, wasi);
-        let mut linker = Linker::new(&engine);
-        add_to_linker(&mut linker, |ctx| ctx)?;
+        let mut linker = Linker::new();
+        define_wasi(&mut linker, &mut store, |ctx| ctx)?;
 
         let log_func = Func::wrap(
             &mut store,

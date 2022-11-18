@@ -16,8 +16,9 @@ serde_json = "1.0"
 rmp-serde = "1.1"
 anyhow = "1.0"
 scopeguard = "1.1"
-wasmtime = "2.0"
-wasmtime-wasi = "2.0"
+wasmi = { git = "https://github.com/paritytech/wasmi.git" }
+wasmi_wasi = { git = "https://github.com/paritytech/wasmi.git" }
+cap-std = "0.25"
 tokio = { version = "1", features = ["macros", "sync"] }
 stream-future = "0.3"
 futures-util = "0.3"
