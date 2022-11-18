@@ -235,27 +235,17 @@ pub enum LoadStatus {
 }
 
 impl Runtime {
-    unsafe fn import<T, Params: DeserializeOwned + Tuple, Res: Serialize>(
-        mut store: Caller<T>,
+    unsafe fn import<T, Params: DeserializeOwned + Tuple>(
+        store: Caller<T>,
         len: i32,
         data: i32,
-        f: impl FnOnce<Params, Output = Res>,
-    ) -> std::result::Result<u64, Trap> {
+        f: impl FnOnce<Params, Output = ()>,
+    ) -> std::result::Result<(), Trap> {
         let memory = store.get_export("memory").unwrap().into_memory().unwrap();
         let data = mem_slice(&store, &memory, data, len);
         let data = rmp_serde::from_slice(data).map_err(|e| Trap::new(e.to_string()))?;
-        let res = f.call_once(data);
-        let data = rmp_serde::to_vec(&res).map_err(|e| Trap::new(e.to_string()))?;
-        let alloc = store
-            .get_export("__abi_alloc")
-            .unwrap()
-            .into_func()
-            .unwrap()
-            .typed::<i32, i32>(&store)
-            .map_err(|e| Trap::new(e.to_string()))?;
-        let ptr = alloc.call(&mut store, data.len() as _)?;
-        mem_slice_mut(&mut store, &memory, ptr, data.len() as _).copy_from_slice(&data);
-        Ok(((data.len() as u64) << 32) | (ptr as u64))
+        f.call_once(data);
+        Ok(())
     }
 
     fn preopen_root(root_path: &Path) -> Result<cap_std::fs::Dir> {
