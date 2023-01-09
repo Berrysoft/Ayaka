@@ -1,0 +1,8 @@
+[package]
+name = "ayaka-plugin-wasmedge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ayaka-plugin = { workspace = true }
+wasmedge-sdk = "0.7"
