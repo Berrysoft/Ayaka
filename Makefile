@@ -4,12 +4,10 @@ test: plugins
 nextest: plugins
 	cd utils && $(MAKE) nextest
 clean:
-	cd bins && $(MAKE) clean
 	cd utils && $(MAKE) clean
 	cd plugins && $(MAKE) clean
 	cd book && $(MAKE) clean
 update:
-	cd bins && $(MAKE) update
 	cd utils && $(MAKE) update
 	cd plugins && $(MAKE) update
 doc:
@@ -22,14 +20,6 @@ serve-book:
 .PHONY: plugins debug-cross release release-cross release-android
 plugins:
 	cd plugins && $(MAKE) plugins
-debug-cross:
-	cd bins && $(MAKE) debug-cross TARGET=$(TARGET)
-release:
-	cd bins && $(MAKE) release
-release-cross:
-	cd bins && $(MAKE) release-cross TARGET=$(TARGET)
-release-android:
-	cd bins && $(MAKE) release-android
 
 examples/plugins.ayapack: plugins
 	(cd -P examples && tar -cf $(abspath $@) -- plugins)
@@ -39,12 +29,10 @@ EXAMPLES:=Basic Fibonacci Fibonacci2 Gacha Live2D Orga Pressure Styles
 define example-tpl
 .PHONY: example-$(1) example-$(1)-gui examples/$(1)/config.tex examples/$(1).ayapack
 example-$(1): examples/$(1).ayapack examples/plugins.ayapack
-	cd bins && $$(MAKE) run FILE='$$(realpath $$^)'
-example-$(1)-gui: examples/$(1).ayapack examples/plugins.ayapack
-	cd bins && $$(MAKE) run-gui FILE='$$(realpath $$^)'
+	cd utils && $$(MAKE) run FILE='$$(realpath $$^)'
 examples/$(1)/latex/config.tex: examples/$(1).ayapack examples/plugins.ayapack
 	mkdir -p $$(@D)
-	cd bins && $$(MAKE) run-latex FILE='$$(realpath $$^)' TEXOUT=$$(abspath $$@)
+	cd utils && $$(MAKE) run-latex FILE='$$(realpath $$^)' TEXOUT=$$(abspath $$@)
 examples/$(1).ayapack:
 	(cd -P examples/$(1) && tar -cf $$(abspath $$@) --exclude=plugins -- *)
 
@@ -54,11 +42,5 @@ $(eval $(foreach ex,$(EXAMPLES),$(call example-tpl,$(ex))))
 
 %.pdf: %.tex
 	cd $(dir $<) && latexmk -lualatex $(notdir $<)
-
-.PHONY: example-android example-ios
-example-android:
-	cd bins && $(MAKE) run-android
-example-ios:
-	cd bins && $(MAKE) run-ios
 
 .SECONDARY:

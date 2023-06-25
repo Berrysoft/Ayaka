@@ -11,6 +11,8 @@ members = [
     "ayaka-plugin-wasmi",
     "ayaka-runtime",
     "ayaka-model",
+    "ayaka-check",
+    "ayaka-latex",
 ]
 
 resolver = "2"
@@ -51,3 +53,9 @@ serde_with = "3"
 serde_yaml = "0.9"
 
 vfs = "0.9"
+
+tokio = { version = "1" }
+clap = { version = "4" }
+flexi_logger = { version = "0.25", default-features = false, features = [
+    "colors",
+] }
