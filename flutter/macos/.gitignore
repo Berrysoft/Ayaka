@@ -1,0 +1,9 @@
+# Flutter-related
+**/Flutter/ephemeral/
+**/Flutter/GeneratedPluginRegistrant.swift
+**/Pods/
+**/Runner/bridge_generated.h
+
+# Xcode-related
+**/dgph
+**/xcuserdata/
