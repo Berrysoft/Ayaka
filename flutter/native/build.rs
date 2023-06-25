@@ -11,7 +11,7 @@ fn main() {
         dart_decl_output: Some("../lib/bridge_definitions.dart".to_string()),
         c_output: Some(vec!["../ios/Runner/bridge_generated.h".to_string()]),
         extra_c_output_path: Some(vec!["../macos/Runner/".to_string()]),
-        rust_crate_dir: None,
+        rust_crate_dir: Some(vec![".".to_string()]),
         rust_output: None,
         class_name: None,
         dart_format_line_length: 80,

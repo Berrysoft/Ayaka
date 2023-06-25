@@ -1,21 +1,45 @@
 use ayaka_model::{
-    anyhow::{Error, Result},
+    anyhow::{anyhow, Error, Result},
     SettingsManager,
 };
-use ayaka_plugin_wasmi::WasmiModule;
 use flutter_rust_bridge::RustOpaque;
 use serde::{de::DeserializeOwned, Serialize};
-use std::path::{Path, PathBuf};
 
 pub use ayaka_model::GameViewModel;
-pub use std::sync::Mutex;
+pub use ayaka_plugin_wasmi::WasmiModule;
+pub use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 pub struct FlutterSettingsManager {
-    local_data_dir: PathBuf,
-    config_dir: PathBuf,
+    pub local_data_dir: RustOpaque<PathBuf>,
+    pub config_dir: RustOpaque<PathBuf>,
 }
 
 impl FlutterSettingsManager {
+    pub fn new() -> Result<FlutterSettingsManager> {
+        Ok(Self::new_with_dirs(
+            dirs_next::data_local_dir()
+                .ok_or_else(|| anyhow!("cannot get local data dir"))?
+                .join("com.unigal.ayaka")
+                .to_string_lossy()
+                .into_owned(),
+            dirs_next::config_dir()
+                .ok_or_else(|| anyhow!("cannot get config dir"))?
+                .join("com.unigal.ayaka")
+                .to_string_lossy()
+                .into_owned(),
+        ))
+    }
+
+    pub fn new_with_dirs(local_data_dir: String, config_dir: String) -> FlutterSettingsManager {
+        Self {
+            local_data_dir: RustOpaque::new(local_data_dir.into()),
+            config_dir: RustOpaque::new(config_dir.into()),
+        }
+    }
+
     fn records_path_root(&self, game: &str) -> PathBuf {
         self.local_data_dir.join("save").join(game)
     }
@@ -81,4 +105,12 @@ impl SettingsManager for FlutterSettingsManager {
 
 pub struct Runtime {
     pub model: RustOpaque<Mutex<GameViewModel<FlutterSettingsManager, WasmiModule>>>,
+}
+
+impl Runtime {
+    pub fn new(s: FlutterSettingsManager) -> Runtime {
+        Self {
+            model: RustOpaque::new(Mutex::new(GameViewModel::new(s))),
+        }
+    }
 }
