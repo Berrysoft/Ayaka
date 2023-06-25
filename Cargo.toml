@@ -1,0 +1,65 @@
+[workspace]
+members = [
+    "utils/ayaka-primitive",
+    "utils/ayaka-bindings-types",
+    "utils/ayaka-bindings-impl",
+    "utils/ayaka-bindings",
+    "utils/ayaka-script",
+    "utils/ayaka-plugin",
+    "utils/ayaka-plugin-wasmer",
+    "utils/ayaka-plugin-wasmtime",
+    "utils/ayaka-plugin-wasmi",
+    "utils/ayaka-runtime",
+    "utils/ayaka-model",
+    "utils/ayaka-check",
+    "utils/ayaka-latex",
+    "flutter/native",
+]
+
+exclude = ["plugins"]
+
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+authors = ["Berrysoft <Strawberry_Str@hotmail.com>"]
+categories = ["game-engines"]
+keywords = ["game", "engine", "galgame"]
+license = "MIT"
+repository = "https://github.com/Uni-Gal/Ayaka"
+
+[workspace.dependencies]
+ayaka-primitive = { path = "utils/ayaka-primitive", version = "0.2.0" }
+ayaka-bindings-types = { path = "utils/ayaka-bindings-types", version = "0.2.0" }
+ayaka-bindings-impl = { path = "utils/ayaka-bindings-impl", version = "0.2.0" }
+ayaka-plugin = { path = "utils/ayaka-plugin", version = "0.2.0" }
+ayaka-plugin-nop = { path = "utils/ayaka-plugin-nop", version = "0.2.0" }
+ayaka-plugin-wasmer = { path = "utils/ayaka-plugin-wasmer", version = "0.2.0" }
+ayaka-plugin-wasmtime = { path = "utils/ayaka-plugin-wasmtime", version = "0.2.0" }
+ayaka-plugin-wasmi = { path = "utils/ayaka-plugin-wasmi", version = "0.2.0" }
+ayaka-script = { path = "utils/ayaka-script", version = "0.2.0" }
+ayaka-runtime = { path = "utils/ayaka-runtime", version = "0.2.0" }
+ayaka-model = { path = "utils/ayaka-model", version = "0.2.0" }
+
+anyhow = "1"
+
+fallback = "0.1"
+
+log = "0.4"
+trylog = "0.3"
+
+stream-future = "0.4"
+
+rmp-serde = "1"
+serde = "1"
+serde_with = "3"
+serde_yaml = "0.9"
+
+vfs = "0.9"
+
+tokio = { version = "1" }
+clap = { version = "4" }
+flexi_logger = { version = "0.25", default-features = false, features = [
+    "colors",
+] }

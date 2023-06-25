@@ -1,59 +1,84 @@
-// This is the entry point of your Rust library.
-// When adding new code to your project, note that only items used
-// here will be transformed to their Dart equivalents.
+use ayaka_model::{
+    anyhow::{Error, Result},
+    SettingsManager,
+};
+use ayaka_plugin_wasmi::WasmiModule;
+use flutter_rust_bridge::RustOpaque;
+use serde::{de::DeserializeOwned, Serialize};
+use std::path::{Path, PathBuf};
 
-// A plain enum without any fields. This is similar to Dart- or C-style enums.
-// flutter_rust_bridge is capable of generating code for enums with fields
-// (@freezed classes in Dart and tagged unions in C).
-pub enum Platform {
-    Unknown,
-    Android,
-    Ios,
-    Windows,
-    Unix,
-    MacIntel,
-    MacApple,
-    Wasm,
+pub use ayaka_model::GameViewModel;
+pub use std::sync::Mutex;
+
+pub struct FlutterSettingsManager {
+    local_data_dir: PathBuf,
+    config_dir: PathBuf,
 }
 
-// A function definition in Rust. Similar to Dart, the return type must always be named
-// and is never inferred.
-pub fn platform() -> Platform {
-    // This is a macro, a special expression that expands into code. In Rust, all macros
-    // end with an exclamation mark and can be invoked with all kinds of brackets (parentheses,
-    // brackets and curly braces). However, certain conventions exist, for example the
-    // vector macro is almost always invoked as vec![..].
-    //
-    // The cfg!() macro returns a boolean value based on the current compiler configuration.
-    // When attached to expressions (#[cfg(..)] form), they show or hide the expression at compile time.
-    // Here, however, they evaluate to runtime values, which may or may not be optimized out
-    // by the compiler. A variety of configurations are demonstrated here which cover most of
-    // the modern oeprating systems. Try running the Flutter application on different machines
-    // and see if it matches your expected OS.
-    //
-    // Furthermore, in Rust, the last expression in a function is the return value and does
-    // not have the trailing semicolon. This entire if-else chain forms a single expression.
-    if cfg!(windows) {
-        Platform::Windows
-    } else if cfg!(target_os = "android") {
-        Platform::Android
-    } else if cfg!(target_os = "ios") {
-        Platform::Ios
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Platform::MacApple
-    } else if cfg!(target_os = "macos") {
-        Platform::MacIntel
-    } else if cfg!(target_family = "wasm") {
-        Platform::Wasm
-    } else if cfg!(unix) {
-        Platform::Unix
-    } else {
-        Platform::Unknown
+impl FlutterSettingsManager {
+    fn records_path_root(&self, game: &str) -> PathBuf {
+        self.local_data_dir.join("save").join(game)
     }
 }
 
-// The convention for Rust identifiers is the snake_case,
-// and they are automatically converted to camelCase on the Dart side.
-pub fn rust_release_mode() -> bool {
-    cfg!(not(debug_assertions))
+impl SettingsManager for FlutterSettingsManager {
+    fn load_file<T: DeserializeOwned>(&self, path: impl AsRef<Path>) -> Result<T> {
+        let file = std::fs::File::open(path)?;
+        Ok(serde_json::from_reader(file)?)
+    }
+
+    fn save_file<T: Serialize>(
+        &self,
+        path: impl AsRef<Path>,
+        data: &T,
+        pretty: bool,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let output = std::fs::File::create(path)?;
+        if pretty {
+            serde_json::to_writer_pretty(output, data)
+        } else {
+            serde_json::to_writer(output, data)
+        }?;
+        Ok(())
+    }
+
+    fn settings_path(&self) -> Result<PathBuf> {
+        Ok(self.config_dir.join("settings.json"))
+    }
+
+    fn global_record_path(&self, game: &str) -> Result<PathBuf> {
+        Ok(self.records_path_root(game).join("global.json"))
+    }
+
+    fn records_path(&self, game: &str) -> Result<impl Iterator<Item = Result<PathBuf>>> {
+        let ctx_path = self.records_path_root(game);
+        Ok(std::fs::read_dir(ctx_path)?.filter_map(|entry| {
+            entry
+                .map_err(Error::from)
+                .map(|entry| {
+                    let p = entry.path();
+                    if p.is_file() && p.file_name().unwrap_or_default() != "global.json" {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                })
+                .transpose()
+        }))
+    }
+
+    fn record_path(&self, game: &str, i: usize) -> Result<PathBuf> {
+        Ok(self
+            .records_path_root(game)
+            .join(i.to_string())
+            .with_extension("json"))
+    }
+}
+
+pub struct Runtime {
+    pub model: RustOpaque<Mutex<GameViewModel<FlutterSettingsManager, WasmiModule>>>,
 }

@@ -1,17 +1,17 @@
 .PHONY: test nextest clean update doc book serve-book
 test: plugins
-	cd utils && $(MAKE) test
+	cargo test --all-features
 nextest: plugins
-	cd utils && $(MAKE) nextest
+	cargo nextest run --all-features
 clean:
-	cd utils && $(MAKE) clean
+	cargo clean
 	cd plugins && $(MAKE) clean
 	cd book && $(MAKE) clean
 update:
-	cd utils && $(MAKE) update
+	cargo update
 	cd plugins && $(MAKE) update
 doc:
-	cd utils && $(MAKE) doc
+	cargo doc --no-deps
 book:
 	cd book && $(MAKE) build
 serve-book:
@@ -29,10 +29,10 @@ EXAMPLES:=Basic Fibonacci Fibonacci2 Gacha Live2D Orga Pressure Styles
 define example-tpl
 .PHONY: example-$(1) example-$(1)-gui examples/$(1)/config.tex examples/$(1).ayapack
 example-$(1): examples/$(1).ayapack examples/plugins.ayapack
-	cd utils && $$(MAKE) run FILE='$$(realpath $$^)'
+	cargo run -p ayaka-check -- $$(realpath $$^) --auto
 examples/$(1)/latex/config.tex: examples/$(1).ayapack examples/plugins.ayapack
 	mkdir -p $$(@D)
-	cd utils && $$(MAKE) run-latex FILE='$$(realpath $$^)' TEXOUT=$$(abspath $$@)
+	cargo run -p ayaka-latex -- $$(realpath $$^) -o $$(abspath $$@)
 examples/$(1).ayapack:
 	(cd -P examples/$(1) && tar -cf $$(abspath $$@) --exclude=plugins -- *)
 
