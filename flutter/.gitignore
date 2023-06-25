@@ -47,7 +47,7 @@ native/target
 xcuserdata
 jniLibs
 
+Cargo.lock
 pubspec.lock
 lib/bridge_definitions.dart
 lib/bridge_generated.dart
-lib/bridge_generated.io.dart

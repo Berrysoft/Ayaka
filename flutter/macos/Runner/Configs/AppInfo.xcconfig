@@ -11,4 +11,4 @@ PRODUCT_NAME = ayaka
 PRODUCT_BUNDLE_IDENTIFIER = com.unigal.ayaka
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2023 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2022-2023 Berrysoft. All rights reserved.
